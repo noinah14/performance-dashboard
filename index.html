@@ -6,6 +6,8 @@
     <title>Business Performance Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
     <style>
         body {
             font-family: 'Inter', sans-serif;
@@ -104,6 +106,20 @@
                     </div>
                 </div>
             </section>
+            
+            <section class="mt-8">
+                <h2 class="text-xl font-semibold text-gray-700 mb-4">DAU Trend</h2>
+                <div class="kpi-card" style="height: 400px;">
+                    <canvas id="dauChart"></canvas>
+                </div>
+            </section>
+
+            <section class="mt-8">
+                <h2 class="text-xl font-semibold text-gray-700 mb-4">MAU Trend</h2>
+                <div class="kpi-card" style="height: 400px;">
+                    <canvas id="mauChart"></canvas>
+                </div>
+            </section>
         </div>
     </div>
 
@@ -113,6 +129,9 @@
         const fileInput = document.getElementById('csv-file-input');
         const fileNameSpan = document.getElementById('file-name');
         
+        let dauChartInstance = null;
+        let mauChartInstance = null;
+
         fileInput.addEventListener('change', (event) => {
             const file = event.target.files[0];
             if (file) {
@@ -135,30 +154,35 @@
         });
 
         function processAndRenderDashboard(data) {
-            const cleanData = data.filter(row => row.month && row.mau_current != null);
+            const cleanData = data.filter(row => row.month);
+
             if (cleanData.length < 2) {
                 alert("The CSV must contain at least two months of data to calculate MoM changes.");
                 return;
             }
             updateKpiCards(cleanData);
+            createDauChart(cleanData);
+            createMauChart(cleanData);
+
             uploadInstructions.classList.add('hidden');
             dashboardContent.classList.remove('hidden');
         }
 
-        // Helper function to parse numbers, removing commas
         const parseNum = (val) => {
             if (val == null) return null;
             return parseFloat(String(val).replace(/,/g, ''));
         };
         
         function updateKpiCards(data) {
-            const latestMonth = data[data.length - 1];
-            const priorMonth = data[data.length - 2];
-
-            if (!latestMonth || !priorMonth) {
-                console.error("Not enough data to update KPI cards.");
-                return;
+            const dataWithCurrentMetrics = data.filter(row => row.dau_current != null && row.mau_current != null && row.dau_current > 0 && row.mau_current > 0);
+            
+            if (dataWithCurrentMetrics.length < 2) {
+                 console.error("Not enough data with current metrics to update KPI cards.");
+                 return;
             }
+
+            const latestMonth = dataWithCurrentMetrics[dataWithCurrentMetrics.length - 1];
+            const priorMonth = dataWithCurrentMetrics[dataWithCurrentMetrics.length - 2];
 
             const formatNumber = (num) => {
                 if (num == null || isNaN(num)) return '_';
@@ -184,7 +208,6 @@
                 element.innerHTML = `<span class="${change >= 0 ? 'positive-change' : 'negative-change'}">${change >= 0 ? '▲' : '▼'} ${Math.abs(change).toFixed(1)}%</span> ${period}`;
             };
             
-            // --- Update KPI Cards ---
             document.getElementById('kpi-dau').textContent = formatNumber(parseNum(latestMonth.dau_current));
             calculateAndDisplayChange(latestMonth.dau_current, priorMonth.dau_current, document.getElementById('kpi-dau-mom'), 'MoM');
             calculateAndDisplayChange(latestMonth.dau_current, latestMonth.dau_prev, document.getElementById('kpi-dau-yoy'), 'YoY');
@@ -197,18 +220,215 @@
             calculateAndDisplayChange(latestMonth.new_users_current, priorMonth.new_users_current, document.getElementById('kpi-new-users-mom'), 'MoM');
             calculateAndDisplayChange(latestMonth.new_users_current, latestMonth.new_users_prev, document.getElementById('kpi-new-users-yoy'), 'YoY');
             
-            // --- FIX 1: Revenue summation now correctly parses numbers ---
-            const totalRevenue = data.reduce((sum, row) => {
-                return sum + (parseNum(row.revenue_current) || 0);
-            }, 0);
+            const totalRevenue = data.reduce((sum, row) => sum + (parseNum(row.revenue_current) || 0), 0);
             document.getElementById('kpi-revenue').textContent = formatRevenue(totalRevenue);
 
-            // --- FIX 2: Revenue MoM now compares the accumulated totals ---
-            const priorData = data.slice(0, data.length - 1);
-            const priorTotalRevenue = priorData.reduce((sum, row) => {
-                return sum + (parseNum(row.revenue_current) || 0);
-            }, 0);
+            const priorData = data.slice(0, dataWithCurrentMetrics.length - 1);
+            const priorTotalRevenue = priorData.reduce((sum, row) => sum + (parseNum(row.revenue_current) || 0), 0);
             calculateAndDisplayChange(totalRevenue, priorTotalRevenue, document.getElementById('kpi-revenue-mom'), 'MoM');
+        }
+
+        function createDauChart(data) {
+            const ctx = document.getElementById('dauChart').getContext('2d');
+            
+            const allMonths = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            const dataMap = new Map(data.map(row => [row.month, row]));
+
+            const dauCurrent = allMonths.map(month => {
+                const row = dataMap.get(month);
+                if (row && row.dau_current != null) { 
+                     const val = parseNum(row.dau_current);
+                     if (val === 0) return null; 
+                     return val / 1000000;
+                }
+                return null;
+            });
+
+            const dauPrev = allMonths.map(month => {
+                const row = dataMap.get(month);
+                return row ? parseNum(row.dau_prev) / 1000000 : null;
+            });
+
+            if (dauChartInstance) {
+                dauChartInstance.destroy();
+            }
+
+            dauChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: allMonths,
+                    datasets: [
+                        {
+                            label: '2025 (Current)',
+                            data: dauCurrent,
+                            borderColor: '#3b82f6',
+                            backgroundColor: '#3b82f6',
+                            tension: 0.1,
+                            pointRadius: 4,
+                            pointHoverRadius: 7
+                        },
+                        {
+                            label: '2024 (Previous)',
+                            data: dauPrev,
+                            borderColor: '#ca8a04',
+                            backgroundColor: '#ca8a04',
+                            tension: 0.1,
+                            pointRadius: 4,
+                            pointHoverRadius: 7
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Daily Active Users (in Millions)',
+                            font: { size: 16 }
+                        },
+                        legend: {
+                            position: 'top',
+                        },
+                        annotation: {
+                            annotations: {
+                                targetLine: {
+                                    type: 'line',
+                                    yMin: 1.5,
+                                    yMax: 1.5,
+                                    borderColor: '#ec4899',
+                                    borderWidth: 2,
+                                    borderDash: [6, 6],
+                                    label: {
+                                        content: 'Target 1.5M',
+                                        display: true,
+                                        position: 'end',
+                                        backgroundColor: '#ec4899',
+                                        font: { weight: 'bold' }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Millions'
+                            }
+                        },
+                        x: {
+                           title: {
+                                display: true,
+                                text: 'Month'
+                           }
+                        }
+                    }
+                }
+            });
+        }
+
+        function createMauChart(data) {
+            const ctx = document.getElementById('mauChart').getContext('2d');
+            
+            const allMonths = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            const dataMap = new Map(data.map(row => [row.month, row]));
+
+            const mauCurrent = allMonths.map(month => {
+                const row = dataMap.get(month);
+                if (row && row.mau_current != null) {
+                     const val = parseNum(row.mau_current);
+                     if (val === 0) return null;
+                     return val / 1000000;
+                }
+                return null;
+            });
+
+            const mauPrev = allMonths.map(month => {
+                const row = dataMap.get(month);
+                return row ? parseNum(row.mau_prev) / 1000000 : null;
+            });
+
+            if (mauChartInstance) {
+                mauChartInstance.destroy();
+            }
+
+            mauChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: allMonths,
+                    datasets: [
+                        {
+                            label: '2025 (Current)',
+                            data: mauCurrent,
+                            borderColor: '#22c55e',
+                            backgroundColor: '#22c55e',
+                            tension: 0.1,
+                            pointRadius: 4,
+                            pointHoverRadius: 7
+                        },
+                        {
+                            label: '2024 (Previous)',
+                            data: mauPrev,
+                            borderColor: '#ca8a04',
+                            backgroundColor: '#ca8a04',
+                            tension: 0.1,
+                            pointRadius: 4,
+                            pointHoverRadius: 7
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Monthly Active Users (in Millions)',
+                            font: { size: 16 }
+                        },
+                        legend: {
+                            position: 'top',
+                        },
+                        // UPDATED: Added annotation for MAU Target Line
+                        annotation: {
+                            annotations: {
+                                targetLine: {
+                                    type: 'line',
+                                    yMin: 15,
+                                    yMax: 15,
+                                    borderColor: '#ec4899',
+                                    borderWidth: 2,
+                                    borderDash: [6, 6],
+                                    label: {
+                                        content: 'Target 15M',
+                                        display: true,
+                                        position: 'end',
+                                        backgroundColor: '#ec4899',
+                                        font: { weight: 'bold' }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Millions'
+                            }
+                        },
+                        x: {
+                           title: {
+                                display: true,
+                                text: 'Month'
+                           }
+                        }
+                    }
+                }
+            });
         }
     </script>
 </body>
